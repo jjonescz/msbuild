@@ -168,5 +168,15 @@ namespace Microsoft.Build.UnitTests.Evaluation
                 },
                 new MockLogger(null, true));
         }
+
+        [Fact]
+        public void SingleBuild()
+        {
+            using var env = TestEnvironment.Create();
+            var collection = env.CreateProjectCollection().Collection;
+            var proj = ObjectModelHelpers.CreateInMemoryProject(collection, "<Project />");
+            var logger = new MockLogger();
+            collection.RegisterLogger(logger);
+        }
     }
 }

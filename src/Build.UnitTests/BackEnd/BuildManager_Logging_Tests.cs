@@ -6,7 +6,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Xml;
 using Microsoft.Build.BackEnd.Logging;
+using Microsoft.Build.Construction;
+using Microsoft.Build.Definition;
 using Microsoft.Build.Evaluation;
 using Microsoft.Build.Execution;
 using Microsoft.Build.Framework;
@@ -15,6 +18,7 @@ using Microsoft.Build.UnitTests;
 using Shouldly;
 using Xunit;
 using Xunit.Abstractions;
+using Xunit.Sdk;
 using static Microsoft.Build.UnitTests.ObjectModelHelpers;
 
 #nullable disable
@@ -117,6 +121,86 @@ namespace Microsoft.Build.Engine.UnitTests.BackEnd
                 allEvents.First(x => x is T).Message.ShouldContain(
                     string.Format(ResourceUtilities.GetResourceString("DeprecatedEventSerialization"),
                     "MyCustomBuildEventArgs"));
+            }
+            finally
+            {
+                _buildManager.EndBuild();
+            }
+        }
+
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        [InlineData(true, true)]
+        public void EvaluationData(bool inMemory, bool multipleRequests)
+        {
+            _projectCollection.RegisterLogger(_logger);
+
+            _buildManager.BeginBuild(new BuildParameters(_projectCollection)
+            {
+                Loggers = [_logger],
+            });
+
+            try
+            {
+                var projectContents = """
+                    <Project>
+                        <PropertyGroup>
+                            <A>Hello</A>
+                            <B>World</B>
+                        </PropertyGroup>
+                        <Target Name="MainTarget">
+                            <Message Text="$(A), $(B)!" />
+                        </Target>
+                        <Target Name="SecondTarget">
+                            <Message Text="test: $(C)" />
+                        </Target>
+                    </Project>
+                    """;
+
+                ProjectRootElement projectRootElement;
+                if (inMemory)
+                {
+                    using var reader = XmlReader.Create(new StringReader(projectContents));
+                    projectRootElement = ProjectRootElement.Create(reader, _projectCollection);
+                }
+                else
+                {
+                    var projectPath = _env.CreateFile().Path;
+                    File.WriteAllText(path: projectPath, contents: projectContents);
+                    projectRootElement = ProjectRootElement.Open(projectPath, _projectCollection);
+                }
+
+                var buildRequestData = new BuildRequestData(
+                    ProjectInstance.FromProjectRootElement(projectRootElement, new ProjectOptions
+                    {
+                        ProjectCollection = _projectCollection,
+                    }),
+                    ["MainTarget"]);
+
+                var result = _buildManager.BuildRequest(buildRequestData);
+
+                Assert.Equal(BuildResultCode.Success, result.OverallResult);
+
+                _logger.AllBuildEvents.OfType<ProjectEvaluationStartedEventArgs>().ShouldHaveSingleItem();
+
+                if (multipleRequests)
+                {
+                    var buildRequestData2 = new BuildRequestData(
+                        ProjectInstance.FromProjectRootElement(projectRootElement, new ProjectOptions
+                        {
+                            ProjectCollection = _projectCollection,
+                            GlobalProperties = new Dictionary<string, string> { { "C", "input" } },
+                        }),
+                        ["SecondTarget"]);
+
+                    var result2 = _buildManager.BuildRequest(buildRequestData2);
+
+                    Assert.Equal(BuildResultCode.Success, result2.OverallResult);
+
+                    _logger.AllBuildEvents.OfType<ProjectEvaluationStartedEventArgs>().Count().ShouldBe(2);
+                }
             }
             finally
             {
